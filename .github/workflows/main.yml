@@ -76,22 +76,50 @@ jobs:
                 -Name 'RDP' `
                 -Password $securePassword `
                 -AccountNeverExpires
+          }
 
+          # Allow RDP login.
+          $rdpGroup = Get-LocalGroup -SID 'S-1-5-32-555'
+
+          $rdpMembers = Get-LocalGroupMember `
+            -Group $rdpGroup.Name `
+            -ErrorAction SilentlyContinue
+
+          if (-not ($rdpMembers | Where-Object {
+              $_.Name -match '\\RDP$'
+          })) {
               Add-LocalGroupMember `
-                -Group 'Remote Desktop Users' `
+                -Group $rdpGroup.Name `
                 -Member 'RDP'
           }
 
-          $members = Get-LocalGroupMember `
-            -Group 'Remote Desktop Users'
+          # Grant local administrator privileges.
+          $adminGroup = Get-LocalGroup -SID 'S-1-5-32-544'
 
-          if (-not ($members | Where-Object { $_.Name -match '\\RDP$' })) {
+          $adminMembers = Get-LocalGroupMember `
+            -Group $adminGroup.Name `
+            -ErrorAction SilentlyContinue
+
+          if (-not ($adminMembers | Where-Object {
+              $_.Name -match '\\RDP$'
+          })) {
               Add-LocalGroupMember `
-                -Group 'Remote Desktop Users' `
+                -Group $adminGroup.Name `
                 -Member 'RDP'
+          }
+
+          # Verify membership.
+          $adminMembers = Get-LocalGroupMember `
+            -Group $adminGroup.Name
+
+          if (-not ($adminMembers | Where-Object {
+              $_.Name -match '\\RDP$'
+          })) {
+              throw 'Failed to grant administrator privileges to RDP.'
           }
 
           Write-Host 'RDP user configured successfully.'
+          Write-Host 'Administrator membership verified.'
 
       - name: Install Tailscale
         shell: pwsh
@@ -210,7 +238,7 @@ jobs:
               throw 'RDP is not listening on TCP port 3389.'
           }
 
-          Write-Host "RDP listener is active."
+          Write-Host 'RDP listener is active.'
           Write-Host "Tailscale IP: $env:TAILSCALE_IP"
 
       - name: Publish Connection Details
@@ -223,6 +251,7 @@ jobs:
           - Username: RDP
           - Port: 3389
           - Password: Use the RDP_PASSWORD secret you configured.
+          - Administrator: Enabled for RDP user.
 
           Your client must be authorized on the same Tailscale network.
           "@
@@ -240,6 +269,7 @@ jobs:
           Write-Host "Address: $env:TAILSCALE_IP"
           Write-Host 'Username: RDP'
           Write-Host 'Password is stored in GitHub Secrets.'
+          Write-Host 'RDP account has administrator group membership.'
 
           while ($true) {
               Start-Sleep -Seconds 60
