@@ -35,11 +35,12 @@ jobs:
 
           Write-Host 'Configuration validated.'
 
-      - name: Configure RDP
+      - name: Configure RDP & Enable Audio/Media Redirection
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
+          # 1. تفعيل الاتصالات البعيدة (RDP) مع NLA
           Set-ItemProperty `
             -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
             -Name 'fDenyTSConnections' `
@@ -52,7 +53,31 @@ jobs:
 
           Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
 
-          Write-Host 'RDP enabled with NLA.'
+          # 2. تشغيل خدمات الصوت والميكروفون الافتراضية في النظام
+          Set-Service -Name Audiosrv -StartupType Automatic
+          Start-Service -Name Audiosrv -ErrorAction SilentlyContinue
+
+          Set-Service -Name AudioEndpointBuilder -StartupType Automatic
+          Start-Service -Name AudioEndpointBuilder -ErrorAction SilentlyContinue
+
+          # 3. السماح بتحويل الصوت، الميكروفون، والكاميرات عبر جلسة الـ RDP
+          $rdpSessionPath = 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+          
+          # السماح بتوجيه الصوت (Audio Playback)
+          Set-ItemProperty -Path $rdpSessionPath -Name 'fDisableAudio' -Value 0
+          
+          # السماح بتسجيل الصوت/الميكروفون (Audio Capture)
+          Set-ItemProperty -Path $rdpSessionPath -Name 'fDisableAudioCapture' -Value 0
+
+          # 4. تفعيل سياسات تحويل الأجهزة والكاميرات (Video Capture Redirection)
+          $clientDevicesPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+          if (-not (Test-Path $clientDevicesPath)) {
+              New-Item -Path $clientDevicesPath -Force | Out-Null
+          }
+          
+          Set-ItemProperty -Path $clientDevicesPath -Name 'fDisableCdm' -Value 0
+
+          Write-Host 'RDP enabled and media redirection configured successfully.'
 
       - name: Create RDP User
         shell: pwsh
