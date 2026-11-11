@@ -35,49 +35,68 @@ jobs:
 
           Write-Host 'Configuration validated.'
 
-      - name: Configure RDP & Enable Audio/Media Redirection
+      - name: Configure RDP & Microphone Redirection
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          # 1. تفعيل الاتصالات البعيدة (RDP) مع NLA
-          Set-ItemProperty `
-            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-            -Name 'fDenyTSConnections' `
-            -Value 0
+          # 1. Enable Remote Desktop
+          $terminalPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
+          $rdpSessionPath = "$terminalPath\WinStations\RDP-Tcp"
 
-          Set-ItemProperty `
-            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name 'UserAuthentication' `
-            -Value 1
+          Set-ItemProperty -Path $terminalPath `
+            -Name 'fDenyTSConnections' -Value 0
+
+          Set-ItemProperty -Path $rdpSessionPath `
+            -Name 'UserAuthentication' -Value 1
 
           Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
 
-          # 2. تشغيل خدمات الصوت والميكروفون الافتراضية في النظام
-          Set-Service -Name Audiosrv -StartupType Automatic
-          Start-Service -Name Audiosrv -ErrorAction SilentlyContinue
+          # 2. Enable Windows Audio Services
+          foreach ($serviceName in @('AudioEndpointBuilder', 'Audiosrv')) {
+              Set-Service -Name $serviceName -StartupType Automatic
 
-          Set-Service -Name AudioEndpointBuilder -StartupType Automatic
-          Start-Service -Name AudioEndpointBuilder -ErrorAction SilentlyContinue
-
-          # 3. السماح بتحويل الصوت، الميكروفون، والكاميرات عبر جلسة الـ RDP
-          $rdpSessionPath = 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
-          
-          # السماح بتوجيه الصوت (Audio Playback)
-          Set-ItemProperty -Path $rdpSessionPath -Name 'fDisableAudio' -Value 0
-          
-          # السماح بتسجيل الصوت/الميكروفون (Audio Capture)
-          Set-ItemProperty -Path $rdpSessionPath -Name 'fDisableAudioCapture' -Value 0
-
-          # 4. تفعيل سياسات تحويل الأجهزة والكاميرات (Video Capture Redirection)
-          $clientDevicesPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
-          if (-not (Test-Path $clientDevicesPath)) {
-              New-Item -Path $clientDevicesPath -Force | Out-Null
+              Start-Service -Name $serviceName `
+                -ErrorAction SilentlyContinue
           }
-          
-          Set-ItemProperty -Path $clientDevicesPath -Name 'fDisableCdm' -Value 0
 
-          Write-Host 'RDP enabled and media redirection configured successfully.'
+          # 3. Configure RDP Audio
+          Set-ItemProperty -Path $rdpSessionPath `
+            -Name 'fDisableAudio' -Value 0 -Type DWord
+
+          Set-ItemProperty -Path $rdpSessionPath `
+            -Name 'fDisableAudioCapture' -Value 0 -Type DWord
+
+          # 4. Configure Group Policies
+          $policyPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+
+          if (-not (Test-Path $policyPath)) {
+              New-Item -Path $policyPath -Force | Out-Null
+          }
+
+          # Allow audio recording redirection
+          Set-ItemProperty -Path $policyPath `
+            -Name 'fDisableAudioCapture' -Value 0 -Type DWord
+
+          # Allow audio playback redirection
+          Set-ItemProperty -Path $policyPath `
+            -Name 'fDisableAudio' -Value 0 -Type DWord
+
+          # Allow Plug and Play device redirection
+          Set-ItemProperty -Path $policyPath `
+            -Name 'fDisablePNPRedir' -Value 0 -Type DWord
+
+          # 5. Enable device redirection policies
+          $devicePolicyPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+
+          Set-ItemProperty -Path $devicePolicyPath `
+            -Name 'fDisableCdm' -Value 0 -Type DWord
+
+          # 6. Verify audio services
+          Get-Service -Name Audiosrv, AudioEndpointBuilder |
+            Format-Table Name, Status, StartType
+
+          Write-Host 'RDP audio and microphone policies configured.'
 
       - name: Create RDP User
         shell: pwsh
@@ -92,9 +111,7 @@ jobs:
             -ErrorAction SilentlyContinue
 
           if ($user) {
-              Set-LocalUser `
-                -Name 'RDP' `
-                -Password $securePassword
+              Set-LocalUser -Name 'RDP' -Password $securePassword
           }
           else {
               New-LocalUser `
@@ -103,9 +120,7 @@ jobs:
                 -AccountNeverExpires
           }
 
-          # Allow RDP login.
           $rdpGroup = Get-LocalGroup -SID 'S-1-5-32-555'
-
           $rdpMembers = Get-LocalGroupMember `
             -Group $rdpGroup.Name `
             -ErrorAction SilentlyContinue
@@ -118,9 +133,7 @@ jobs:
                 -Member 'RDP'
           }
 
-          # Grant local administrator privileges.
           $adminGroup = Get-LocalGroup -SID 'S-1-5-32-544'
-
           $adminMembers = Get-LocalGroupMember `
             -Group $adminGroup.Name `
             -ErrorAction SilentlyContinue
@@ -133,18 +146,7 @@ jobs:
                 -Member 'RDP'
           }
 
-          # Verify membership.
-          $adminMembers = Get-LocalGroupMember `
-            -Group $adminGroup.Name
-
-          if (-not ($adminMembers | Where-Object {
-              $_.Name -match '\\RDP$'
-          })) {
-              throw 'Failed to grant administrator privileges to RDP.'
-          }
-
           Write-Host 'RDP user configured successfully.'
-          Write-Host 'Administrator membership verified.'
 
       - name: Install Tailscale
         shell: pwsh
@@ -153,13 +155,9 @@ jobs:
 
           $url = 'https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi'
 
-          $installer = Join-Path `
-            $env:RUNNER_TEMP `
-            'tailscale-setup.msi'
+          $installer = Join-Path $env:RUNNER_TEMP 'tailscale-setup.msi'
 
-          Invoke-WebRequest `
-            -Uri $url `
-            -OutFile $installer
+          Invoke-WebRequest -Uri $url -OutFile $installer
 
           if (-not (Test-Path -LiteralPath $installer)) {
               throw 'Tailscale installer download failed.'
@@ -167,14 +165,8 @@ jobs:
 
           $process = Start-Process `
             -FilePath 'msiexec.exe' `
-            -ArgumentList @(
-              '/i',
-              "`"$installer`"",
-              '/qn',
-              '/norestart'
-            ) `
-            -Wait `
-            -PassThru
+            -ArgumentList @('/i', "`"$installer`"", '/qn', '/norestart') `
+            -Wait -PassThru
 
           Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
@@ -233,7 +225,7 @@ jobs:
 
           Write-Host "Tailscale IP: $ip"
 
-      - name: Verify RDP
+      - name: Verify RDP and Audio Configuration
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -263,6 +255,9 @@ jobs:
               throw 'RDP is not listening on TCP port 3389.'
           }
 
+          Get-Service Audiosrv, AudioEndpointBuilder, TermService |
+            Format-Table Name, Status, StartType
+
           Write-Host 'RDP listener is active.'
           Write-Host "Tailscale IP: $env:TAILSCALE_IP"
 
@@ -275,9 +270,10 @@ jobs:
           - Address: $env:TAILSCALE_IP
           - Username: RDP
           - Port: 3389
-          - Password: Use the RDP_PASSWORD secret you configured.
-          - Administrator: Enabled for RDP user.
+          - Password: Use the RDP_PASSWORD secret.
+          - Administrator: Enabled.
 
+          Microphone redirection policies enabled.
           Your client must be authorized on the same Tailscale network.
           "@
 
@@ -293,8 +289,6 @@ jobs:
           Write-Host 'RDP session is running.'
           Write-Host "Address: $env:TAILSCALE_IP"
           Write-Host 'Username: RDP'
-          Write-Host 'Password is stored in GitHub Secrets.'
-          Write-Host 'RDP account has administrator group membership.'
 
           while ($true) {
               Start-Sleep -Seconds 60
